@@ -2073,6 +2073,9 @@ func (h *Server) UpdateTyping(ctx context.Context, arg chat1.UpdateTypingArg) (e
 // Post a join or leave. Must be called when the user is in the conv.
 // Uses a blocking sender.
 func (h *Server) postJoinLeave(ctx context.Context, convID chat1.ConversationID, body chat1.MessageJoinLeave) (rl *chat1.RateLimit, err error) {
+	h.Debug(ctx, "+ postJoinLeave(%v)", convID)
+	defer func() { h.Debug(ctx, "- postJoinLeave -> %v", err) }()
+
 	uid := h.G().Env.GetUID()
 	if uid.IsNil() {
 		return rl, libkb.LoginRequiredError{}
@@ -2109,6 +2112,7 @@ func (h *Server) postJoinLeave(ctx context.Context, convID chat1.ConversationID,
 
 	// Send with a blocking sender
 	sender := NewBlockingSender(h.G(), h.boxer, h.store, h.remoteClient)
+	h.Debug(ctx, "postJoinLeave sending")
 	_, _, rl, err = sender.Send(ctx, convID, plaintext, 0)
 	return rl, err
 }
