@@ -3,7 +3,6 @@ package teams
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/keybase/client/go/libkb"
 	"github.com/keybase/client/go/protocol/keybase1"
@@ -41,7 +40,7 @@ func (l *TeamLoader) fillInStubbedLinks(ctx context.Context,
 		return state, proofSet, parentChildOperations, nil
 	}
 
-	teamUpdate, err := l.getLinksFromServer(ctx, state.Chain.Id, requestSeqnos, &readSubteamID)
+	teamUpdate, err := l.world.GetLinksFromServer(ctx, state.Chain.Id, requestSeqnos, &readSubteamID)
 	if err != nil {
 		return state, proofSet, parentChildOperations, err
 	}
@@ -84,65 +83,6 @@ func (l *TeamLoader) fillInStubbedLinks(ctx context.Context,
 
 }
 
-// Get new links from the server.
-func (l *TeamLoader) getNewLinksFromServer(ctx context.Context,
-	teamID keybase1.TeamID, lowSeqno keybase1.Seqno, lowGen keybase1.PerTeamKeyGeneration,
-	readSubteamID *keybase1.TeamID) (*rawTeam, error) {
-
-	arg := libkb.NewRetryAPIArg("team/get")
-	arg.NetContext = ctx
-	arg.SessionType = libkb.APISessionTypeREQUIRED
-	arg.Args = libkb.HTTPArgs{
-		"id":               libkb.S{Val: teamID.String()},
-		"low":              libkb.I{Val: int(lowSeqno)},
-		"per_team_key_low": libkb.I{Val: int(lowGen)},
-	}
-	if readSubteamID != nil {
-		arg.Args["read_subteam_id"] = libkb.S{Val: readSubteamID.String()}
-	}
-
-	var rt rawTeam
-	if err := l.G().API.GetDecode(arg, &rt); err != nil {
-		return nil, err
-	}
-	if !rt.ID.Eq(teamID) {
-		return nil, fmt.Errorf("server returned wrong team ID: %v != %v", rt.ID, teamID)
-	}
-	return &rt, nil
-}
-
-// Get full links from the server.
-// Does not guarantee that the server returned the correct links, nor that they are unstubbed.
-func (l *TeamLoader) getLinksFromServer(ctx context.Context,
-	teamID keybase1.TeamID, requestSeqnos []keybase1.Seqno, readSubteamID *keybase1.TeamID) (*rawTeam, error) {
-
-	var seqnoStrs []string
-	for _, seqno := range requestSeqnos {
-		seqnoStrs = append(seqnoStrs, fmt.Sprintf("%d", int(seqno)))
-	}
-	seqnoCommas := strings.Join(seqnoStrs, ",")
-
-	arg := libkb.NewRetryAPIArg("team/get")
-	arg.NetContext = ctx
-	arg.SessionType = libkb.APISessionTypeREQUIRED
-	arg.Args = libkb.HTTPArgs{
-		"id":     libkb.S{Val: teamID.String()},
-		"seqnos": libkb.S{Val: seqnoCommas},
-	}
-	if readSubteamID != nil {
-		arg.Args["read_subteam_id"] = libkb.S{Val: readSubteamID.String()}
-	}
-
-	var rt rawTeam
-	if err := l.G().API.GetDecode(arg, &rt); err != nil {
-		return nil, err
-	}
-	if !rt.ID.Eq(teamID) {
-		return nil, fmt.Errorf("server returned wrong team ID: %v != %v", rt.ID, teamID)
-	}
-	return &rt, nil
-}
-
 // checkStubbed checks if it's OK that a link is stubbed.
 func (l *TeamLoader) checkStubbed(ctx context.Context, arg load2ArgT, link *chainLinkUnpacked) error {
 	if !link.isStubbed() {
@@ -168,20 +108,11 @@ func (l *TeamLoader) loadUserAndKeyFromLinkInner(ctx context.Context, inner SCCh
 	}
 	uid := keySection.UID
 	kid := keySection.KID
-	user, key, linkMap, err = l.G().GetUPAKLoader().LoadKeyV2(ctx, uid, kid)
+	user, key, linkMap, err = l.world.LoadKeyV2(ctx, uid, kid)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return user, key, linkMap, nil
-}
-
-func forceLinkMapRefreshForUser(ctx context.Context, g *libkb.GlobalContext, uid keybase1.UID) (linkMap map[keybase1.Seqno]keybase1.LinkID, err error) {
-	arg := libkb.NewLoadUserArgBase(g).WithNetContext(ctx).WithUID(uid).WithForcePoll()
-	upak, _, err := g.GetUPAKLoader().LoadV2(*arg)
-	if err != nil {
-		return nil, err
-	}
-	return upak.SeqnoLinkIDs, nil
 }
 
 func (l *TeamLoader) verifySignatureAndExtractKID(ctx context.Context, outer libkb.OuterLinkV2WithMetadata) (keybase1.KID, error) {
@@ -544,7 +475,7 @@ func (l *TeamLoader) checkOneParentChildOperation(ctx context.Context,
 func (l *TeamLoader) checkProofs(ctx context.Context,
 	state *keybase1.TeamData, proofSet *proofSetT) error {
 
-	return proofSet.check(ctx, l.G())
+	return proofSet.check(ctx, l.G(), l.world)
 }
 
 // Add data to the state that is not included in the sigchain:
@@ -746,20 +677,7 @@ func (l *TeamLoader) unboxPerTeamSecrets(ctx context.Context,
 }
 
 func (l *TeamLoader) perUserEncryptionKey(ctx context.Context, userSeqno keybase1.Seqno) (*libkb.NaclDHKeyPair, error) {
-	kr, err := l.G().GetPerUserKeyring()
-	if err != nil {
-		return nil, err
-	}
-	// Try to get it locally, if that fails try again after syncing.
-	encKey, err := kr.GetEncryptionKeyBySeqno(ctx, userSeqno)
-	if err == nil {
-		return encKey, err
-	}
-	if err := kr.Sync(ctx); err != nil {
-		return nil, err
-	}
-	encKey, err = kr.GetEncryptionKeyBySeqno(ctx, userSeqno)
-	return encKey, err
+	return l.world.PerUserEncryptionKey(ctx, userSeqno)
 }
 
 func (l *TeamLoader) unpackLinks(ctx context.Context, teamUpdate *rawTeam) ([]*chainLinkUnpacked, error) {
