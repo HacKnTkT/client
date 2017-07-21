@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -521,7 +520,7 @@ func (h *Server) NewConversationLocal(ctx context.Context, arg chat1.NewConversa
 		if err != nil {
 			return chat1.NewConversationLocalRes{}, fmt.Errorf("error creating topic ID: %s", err)
 		}
-		firstMessageBoxed, err := h.makeFirstMessage(ctx, triple, info.CanonicalName,
+		firstMessageBoxed, topicNameState, err := h.makeFirstMessage(ctx, triple, info.CanonicalName,
 			arg.MembersType, arg.TlfVisibility, arg.TopicName)
 		if err != nil {
 			return chat1.NewConversationLocalRes{}, fmt.Errorf("error preparing message: %s", err)
@@ -529,9 +528,10 @@ func (h *Server) NewConversationLocal(ctx context.Context, arg chat1.NewConversa
 
 		var ncrres chat1.NewConversationRemoteRes
 		ncrres, reserr = h.remoteClient().NewConversationRemote2(ctx, chat1.NewConversationRemote2Arg{
-			IdTriple:    triple,
-			TLFMessage:  *firstMessageBoxed,
-			MembersType: arg.MembersType,
+			IdTriple:       triple,
+			TLFMessage:     *firstMessageBoxed,
+			MembersType:    arg.MembersType,
+			TopicNameState: topicNameState,
 		})
 		if ncrres.RateLimit != nil {
 			res.RateLimits = append(res.RateLimits, *ncrres.RateLimit)
@@ -605,7 +605,7 @@ var DefaultTeamTopic = "general"
 
 func (h *Server) makeFirstMessage(ctx context.Context, triple chat1.ConversationIDTriple,
 	tlfName string, membersType chat1.ConversationMembersType, tlfVisibility chat1.TLFVisibility,
-	topicName *string) (*chat1.MessageBoxed, error) {
+	topicName *string) (*chat1.MessageBoxed, *chat1.TopicNameState, error) {
 	var msg chat1.MessagePlaintext
 	if topicName != nil {
 		msg = chat1.MessagePlaintext{
@@ -636,8 +636,8 @@ func (h *Server) makeFirstMessage(ctx context.Context, triple chat1.Conversation
 	}
 
 	sender := NewBlockingSender(h.G(), h.boxer, h.store, h.remoteClient)
-	mbox, _, _, _, err := sender.Prepare(ctx, msg, membersType, nil)
-	return mbox, err
+	mbox, _, _, _, topicNameState, err := sender.Prepare(ctx, msg, membersType, nil)
+	return mbox, topicNameState, err
 }
 
 func (h *Server) GetInboxSummaryForCLILocal(ctx context.Context, arg chat1.GetInboxSummaryForCLILocalQuery) (res chat1.GetInboxSummaryForCLILocalRes, err error) {
@@ -2198,28 +2198,11 @@ func (h *Server) GetTLFConversationsLocal(ctx context.Context, arg chat1.GetTLFC
 		return res, err
 	}
 
-	tlfRes, err := h.remoteClient().GetTLFConversations(ctx, chat1.GetTLFConversationsArg{
-		TlfID:            nameInfo.ID,
-		TopicType:        arg.TopicType,
-		MembersType:      arg.MembersType,
-		SummarizeMaxMsgs: false,
-	})
-	if tlfRes.RateLimit != nil {
-		res.RateLimits = append(res.RateLimits, *tlfRes.RateLimit)
-	}
-
-	// Localize the conversations
-	convsLocal, err := NewBlockingLocalizer(h.G()).Localize(ctx, uid, chat1.Inbox{
-		ConvsUnverified: tlfRes.Conversations,
-	})
+	res.Convs, res.RateLimits, err = GetTLFConversations(ctx, h.G(), h.DebugLabeler, h.remoteClient,
+		uid, nameInfo.ID, arg.TopicType, arg.MembersType)
 	if err != nil {
-		h.Debug(ctx, "JoinConversationLocal: failed to localize conversations: %s", err.Error())
 		return res, err
 	}
-	sort.Sort(utils.ConvLocalByTopicName(convsLocal))
-
-	res.Convs = convsLocal
-	res.RateLimits = utils.AggRateLimits(res.RateLimits)
 	res.Offline = h.G().Syncer.IsConnected(ctx)
 	return res, nil
 }

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"math"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/keybase/client/go/protocol/chat1"
 	"github.com/keybase/client/go/protocol/gregor1"
 	"github.com/keybase/client/go/protocol/keybase1"
+	"github.com/keybase/go-codec/codec"
 )
 
 func SendTextByName(ctx context.Context, g *globals.Context, name string, membersType chat1.ConversationMembersType, ident keybase1.TLFIdentifyBehavior, text string, ri chat1.RemoteInterface) error {
@@ -139,15 +141,16 @@ func (s *sendHelper) newConversation(ctx context.Context) error {
 
 	boxer := NewBoxer(s.G())
 	sender := NewBlockingSender(s.G(), boxer, nil, s.remoteInterface)
-	mbox, _, _, _, err := sender.Prepare(ctx, first, s.membersType, nil)
+	mbox, _, _, _, topicNameState, err := sender.Prepare(ctx, first, s.membersType, nil)
 	if err != nil {
 		return err
 	}
 
 	ncrres, reserr := s.ri.NewConversationRemote2(ctx, chat1.NewConversationRemote2Arg{
-		IdTriple:    s.triple,
-		TLFMessage:  *mbox,
-		MembersType: s.membersType,
+		IdTriple:       s.triple,
+		TLFMessage:     *mbox,
+		MembersType:    s.membersType,
+		TopicNameState: topicNameState,
 	})
 	convID := ncrres.ConvID
 	if reserr != nil {
@@ -244,4 +247,94 @@ func (r *recentConversationParticipants) get(ctx context.Context, myUID gregor1.
 func RecentConversationParticipants(ctx context.Context, g *globals.Context, myUID gregor1.UID) ([]gregor1.UID, error) {
 	ctx = Context(ctx, g, keybase1.TLFIdentifyBehavior_CHAT_GUI, nil, NewIdentifyNotifier(g))
 	return newRecentConversationParticipants(g).get(ctx, myUID)
+}
+
+func GetUnverifiedConv(ctx context.Context, g *globals.Context, uid gregor1.UID,
+	convID chat1.ConversationID, useLocalData bool) (chat1.Conversation, *chat1.RateLimit, error) {
+
+	inbox, ratelim, err := g.InboxSource.ReadUnverified(ctx, uid, useLocalData, &chat1.GetInboxQuery{
+		ConvIDs: []chat1.ConversationID{convID},
+	}, nil)
+	if err != nil {
+		return chat1.Conversation{}, ratelim, fmt.Errorf("GetUnverifiedConv: %s", err.Error())
+	}
+	if len(inbox.ConvsUnverified) == 0 {
+		return chat1.Conversation{}, ratelim, fmt.Errorf("GetUnverifiedConv: conversation not found: %s", convID)
+	}
+	return inbox.ConvsUnverified[0], ratelim, nil
+}
+
+func GetTLFConversations(ctx context.Context, g *globals.Context, debugger utils.DebugLabeler,
+	ri func() chat1.RemoteInterface, uid gregor1.UID, tlfID chat1.TLFID, topicType chat1.TopicType,
+	membersType chat1.ConversationMembersType) (res []chat1.ConversationLocal, rl []chat1.RateLimit, err error) {
+
+	tlfRes, err := ri().GetTLFConversations(ctx, chat1.GetTLFConversationsArg{
+		TlfID:            tlfID,
+		TopicType:        topicType,
+		MembersType:      membersType,
+		SummarizeMaxMsgs: false,
+	})
+	if tlfRes.RateLimit != nil {
+		rl = append(rl, *tlfRes.RateLimit)
+	}
+
+	// Localize the conversations
+	res, err = NewBlockingLocalizer(g).Localize(ctx, uid, chat1.Inbox{
+		ConvsUnverified: tlfRes.Conversations,
+	})
+	if err != nil {
+		debugger.Debug(ctx, "GetTLFConversations: failed to localize conversations: %s", err.Error())
+		return res, rl, err
+	}
+	sort.Sort(utils.ConvLocalByTopicName(res))
+	rl = utils.AggRateLimits(rl)
+	return res, rl, nil
+}
+
+func GetTopicNameState(ctx context.Context, g *globals.Context, debugger utils.DebugLabeler,
+	ri func() chat1.RemoteInterface,
+	uid gregor1.UID, tlfID chat1.TLFID, topicType chat1.TopicType,
+	membersType chat1.ConversationMembersType) (res chat1.TopicNameState, rl []chat1.RateLimit, err error) {
+
+	var convs []chat1.ConversationLocal
+	convs, rl, err = GetTLFConversations(ctx, g, debugger, ri, uid, tlfID, topicType, membersType)
+	if err != nil {
+		debugger.Debug(ctx, "GetTopicNameState: failed to get TLF conversations: %s", err.Error())
+		return res, rl, err
+	}
+	sort.Sort(utils.ConvLocalByConvID(convs))
+
+	var pairs chat1.ConversationIDMessageIDPairs
+	for _, conv := range convs {
+		msg, err := conv.GetMaxMessage(chat1.MessageType_METADATA)
+		if err != nil {
+			debugger.Debug(ctx, "GetTopicNameState: skipping convID: %s, no metadata message",
+				conv.GetConvID())
+			continue
+		}
+		if !msg.IsValid() {
+			debugger.Debug(ctx, "GetTopicNameState: skipping convID: %s, invalid metadata message",
+				conv.GetConvID())
+			continue
+		}
+		pairs.Pairs = append(pairs.Pairs, chat1.ConversationIDMessageIDPair{
+			ConvID: conv.GetConvID(),
+			MsgID:  msg.GetMessageID(),
+		})
+	}
+
+	mh := codec.MsgpackHandle{WriteExt: true}
+	var data []byte
+	enc := codec.NewEncoderBytes(&data, &mh)
+	if err := enc.Encode(pairs); err != nil {
+		return res, rl, err
+	}
+
+	h := sha256.New()
+	if _, err = h.Write(data); err != nil {
+		debugger.Debug(ctx, "GetTopicNameState: failed to hash topic name state: %s", err.Error())
+		return res, rl, err
+	}
+
+	return h.Sum(nil), rl, nil
 }

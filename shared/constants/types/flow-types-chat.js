@@ -1202,6 +1202,15 @@ export type ConversationFinalizeInfo = {
 
 export type ConversationID = bytes
 
+export type ConversationIDMessageIDPair = {
+  convID: ConversationID,
+  msgID: MessageID,
+}
+
+export type ConversationIDMessageIDPairs = {
+  pairs?: ?Array<ConversationIDMessageIDPair>,
+}
+
 export type ConversationIDTriple = {
   tlfid: TLFID,
   topicType: TopicType,
@@ -2085,6 +2094,8 @@ export type ThreadViewBoxed = {
 
 export type TopicID = bytes
 
+export type TopicNameState = bytes
+
 export type TopicType =
     0 // NONE_0
   | 1 // CHAT_1
@@ -2428,7 +2439,8 @@ export type remoteMarkAsReadRpcParam = Exact<{
 export type remoteNewConversationRemote2RpcParam = Exact<{
   idTriple: ConversationIDTriple,
   TLFMessage: MessageBoxed,
-  membersType: ConversationMembersType
+  membersType: ConversationMembersType,
+  topicNameState?: ?TopicNameState
 }>
 
 export type remoteNewConversationRemoteRpcParam = Exact<{
@@ -2439,7 +2451,8 @@ export type remotePostRemoteRpcParam = Exact<{
   conversationID: ConversationID,
   messageBoxed: MessageBoxed,
   atMentions?: ?Array<gregor1.UID>,
-  channelMention: ChannelMention
+  channelMention: ChannelMention,
+  topicNameState?: ?TopicNameState
 }>
 
 export type remotePublishReadMessageRpcParam = Exact<{
