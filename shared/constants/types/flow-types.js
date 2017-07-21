@@ -4265,8 +4265,19 @@ export type AnnotatedMemberInfo = {
   implicit?: ?ImplicitRole,
 }
 
+export type AnnotatedTeamInvite = {
+  role: TeamRole,
+  id: TeamInviteID,
+  type: TeamInviteType,
+  name: TeamInviteName,
+  inviter: UserVersion,
+  inviterUsername: string,
+  teamName: string,
+}
+
 export type AnnotatedTeamList = {
   teams?: ?Array<AnnotatedMemberInfo>,
+  annotatedActiveInvites: {[key: string]: AnnotatedTeamInvite},
 }
 
 export type AppState =
@@ -6091,7 +6102,7 @@ export type TeamData = {
 export type TeamDetails = {
   members: TeamMembersDetails,
   keyGeneration: PerTeamKeyGeneration,
-  activeInvites: {[key: string]: TeamInvite},
+  annotatedActiveInvites: {[key: string]: AnnotatedTeamInvite},
 }
 
 export type TeamID = string
